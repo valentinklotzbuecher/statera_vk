@@ -1,0 +1,206 @@
+---
+title: "Statera Training Progress"
+subtitle: "Klotzbücher, Valentin — Phase 1–12A (Oct 2024 – Feb 2026)"
+format:
+  html:
+    self-contained: true
+    theme: flatly
+    toc: true
+    toc-depth: 2
+    code-fold: true
+execute:
+  echo: false
+  warning: false
+---
+
+```{python}
+import pandas as pd
+import plotly.express as px
+import plotly.graph_objects as go
+from itables import show
+
+df = pd.read_csv("data/training_panel.csv")
+df["phase_date"] = pd.to_datetime(df["phase_date"])
+
+# Phase labels for axes (ordered)
+phase_order = df.drop_duplicates("phase_num").sort_values("phase_num")
+phase_labels = phase_order["phase"].tolist()
+
+# Only rows with actual weight data
+dfw = df.dropna(subset=["weight_kg"]).copy()
+dfw["phase"] = pd.Categorical(dfw["phase"], categories=phase_labels, ordered=True)
+```
+
+## Weight Progression Over Phases
+
+Week 1 starting weight for each exercise across all phases — the main indicator of
+progressive overload.
+
+```{python}
+w1 = dfw[dfw.week == 1].copy()
+
+# For exercises in both plans, keep whichever plan they first appear in
+w1 = w1.drop_duplicates(subset=["phase_num", "exercise_normalized"], keep="first")
+
+fig = px.line(
+    w1.sort_values("phase_num"),
+    x="phase",
+    y="weight_kg",
+    color="exercise_normalized",
+    markers=True,
+    labels={
+        "weight_kg": "Weight (kg)",
+        "phase": "Phase",
+        "exercise_normalized": "Exercise",
+    },
+    category_orders={"phase": phase_labels},
+)
+fig.update_layout(
+    height=550,
+    legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5),
+    hovermode="x unified",
+)
+fig.show()
+```
+
+## Weekly Weight Ramp Within Phases
+
+How weight increases week-to-week within each training block. Select compound
+exercises that appear across all or most phases.
+
+```{python}
+compounds = [
+    "Beinpresse",
+    "Kniebeuge Maschine",
+    "Bankdrücken",
+    "Schrägbankdrücken",
+    "Rudern",
+    "Latzug",
+    "Kreuzheben KH",
+]
+dc = dfw[dfw.exercise_normalized.isin(compounds)].copy()
+
+fig = px.line(
+    dc.sort_values(["phase_num", "week"]),
+    x="week",
+    y="weight_kg",
+    color="exercise_normalized",
+    facet_col="phase",
+    facet_col_wrap=4,
+    markers=True,
+    labels={
+        "weight_kg": "Weight (kg)",
+        "week": "Week",
+        "exercise_normalized": "Exercise",
+    },
+    category_orders={"phase": phase_labels},
+)
+fig.update_layout(height=800, showlegend=True)
+fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+fig.show()
+```
+
+## Rep Scheme Evolution
+
+Reps per set decreased over the program (12 → 10 → 8 → 6) while weights increased,
+following a classic periodization model.
+
+```{python}
+reps_df = (
+    dfw[dfw.week == 1]
+    .drop_duplicates(subset=["phase_num", "exercise_normalized"])
+    .copy()
+)
+reps_df["reps"] = pd.to_numeric(reps_df["reps"], errors="coerce")
+
+avg_reps = (
+    reps_df.groupby(["phase_num", "phase"])["reps"]
+    .median()
+    .reset_index()
+    .sort_values("phase_num")
+)
+
+fig = go.Figure()
+fig.add_trace(
+    go.Bar(
+        x=avg_reps["phase"],
+        y=avg_reps["reps"],
+        marker_color="#3498db",
+        text=avg_reps["reps"].astype(int),
+        textposition="outside",
+    )
+)
+fig.update_layout(
+    yaxis_title="Reps per Set (median)",
+    xaxis_title="Phase",
+    height=400,
+    yaxis=dict(range=[0, 14]),
+)
+fig.show()
+```
+
+## Volume Comparison: Plan A vs Plan B
+
+Starting from Phase 4, training splits into Plan A (typically squat/bench/pull
+compounds) and Plan B (press/incline/row compounds). Comparison uses total Week 1
+load (weight × reps × sets where available).
+
+```{python}
+ab = dfw[(dfw.plan.isin(["A", "B"])) & (dfw.week == 1)].copy()
+ab["reps_n"] = pd.to_numeric(ab["reps"], errors="coerce")
+ab["sets_n"] = pd.to_numeric(ab["sets"], errors="coerce").fillna(3)
+ab["volume"] = ab["weight_kg"] * ab["reps_n"] * ab["sets_n"]
+
+vol = (
+    ab.groupby(["phase_num", "phase", "plan"])["volume"]
+    .sum()
+    .reset_index()
+    .sort_values("phase_num")
+)
+
+fig = px.bar(
+    vol,
+    x="phase",
+    y="volume",
+    color="plan",
+    barmode="group",
+    labels={"volume": "Total Volume (kg × reps × sets)", "phase": "Phase"},
+    category_orders={"phase": phase_labels, "plan": ["A", "B"]},
+    color_discrete_map={"A": "#2ecc71", "B": "#e74c3c"},
+)
+fig.update_layout(height=450)
+fig.show()
+```
+
+## Phase Summary
+
+```{python}
+summary_rows = []
+for _, grp in df.groupby("phase_num"):
+    row = grp.iloc[0]
+    exercises = grp["exercise_normalized"].nunique()
+    plans = sorted(grp["plan"].unique())
+    plan_str = "/".join(plans)
+    reps_vals = pd.to_numeric(grp["reps"], errors="coerce").dropna().unique()
+    reps_range = (
+        f"{int(min(reps_vals))}–{int(max(reps_vals))}"
+        if len(reps_vals) > 1
+        else str(int(reps_vals[0]))
+        if len(reps_vals) == 1
+        else "—"
+    )
+    weeks = int(grp["week"].max())
+    summary_rows.append(
+        {
+            "Phase": row["phase"],
+            "Start Date": str(row["phase_date"])[:10] if pd.notna(row["phase_date"]) else "—",
+            "Weeks": weeks,
+            "Exercises": exercises,
+            "Plans": plan_str,
+            "Reps": reps_range,
+        }
+    )
+
+summary = pd.DataFrame(summary_rows)
+show(summary, paging=False, searching=False)
+```
