@@ -15,6 +15,7 @@ execute:
 
 ```{python}
 import pandas as pd
+import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 from itables import show
@@ -29,146 +30,232 @@ phase_labels = phase_order["phase"].tolist()
 # Only rows with actual weight data
 dfw = df.dropna(subset=["weight_kg"]).copy()
 dfw["phase"] = pd.Categorical(dfw["phase"], categories=phase_labels, ordered=True)
+
+# Shared color palette — consistent across all charts
+PALETTE = {
+    "Beinpresse":              "#e74c3c",  # red
+    "Kniebeuge Maschine":      "#c0392b",  # dark red
+    "Bankdrücken":             "#2980b9",  # blue
+    "Schrägbankdrücken":       "#3498db",  # light blue
+    "Rudern":                  "#27ae60",  # green
+    "Latzug":                  "#2ecc71",  # light green
+    "Kreuzheben KH":           "#8e44ad",  # purple
+    "Beinbeugen":              "#e67e22",  # orange
+    "Schulterdrücken stehend": "#f39c12",  # yellow-orange
+    "Trizepsdrücken Seilzug":  "#1abc9c",  # teal
+    "Trizepsdrücken liegend":  "#16a085",  # dark teal
+    "Bizepscurls":             "#d35400",  # burnt orange
+    "Butterfly reverse":       "#9b59b6",  # lavender purple
+    "Hammercurls":             "#e84393",  # pink
+    "Kickbacks":               "#636e72",  # grey
+}
+
+# Shared clean layout defaults
+LAYOUT = dict(
+    plot_bgcolor="white",
+    paper_bgcolor="white",
+    font=dict(size=12),
+)
+GRID = dict(gridcolor="#eee")
+
+def color_for(name):
+    return PALETTE.get(name, "#7f8c8d")
 ```
 
 ## Weight Progression Over Phases
 
-Week 1 starting weight for each exercise across all phases — the main indicator of
-progressive overload.
+All weekly weights for each exercise across phases. Within each phase the dots spread
+across weeks; the connected line follows Week 1 starting weights — the main
+indicator of progressive overload.
 
 ```{python}
-w1 = dfw[dfw.week == 1].copy()
+# All weeks, deduplicated per phase/exercise/week (keep first plan occurrence)
+wall = dfw.drop_duplicates(
+    subset=["phase_num", "exercise_normalized", "week"], keep="first"
+).copy()
 
-# For exercises in both plans, keep whichever plan they first appear in
-w1 = w1.drop_duplicates(subset=["phase_num", "exercise_normalized"], keep="first")
+# Build a continuous x-position: phase_num + fractional offset per week
+max_weeks = wall.groupby("phase_num")["week"].transform("max")
+wall["x_pos"] = wall["phase_num"] + (wall["week"] - 1) / max_weeks * 0.8
 
-fig = px.line(
-    w1.sort_values("phase_num"),
-    x="phase",
-    y="weight_kg",
-    color="exercise_normalized",
-    markers=True,
-    labels={
-        "weight_kg": "Weight (kg)",
-        "phase": "Phase",
-        "exercise_normalized": "Exercise",
-    },
-    category_orders={"phase": phase_labels},
-)
+# Tick positions at integer phase numbers
+tick_vals = sorted(wall["phase_num"].unique())
+tick_text = [phase_labels[i] for i, _ in enumerate(tick_vals)]
+
+fig = go.Figure()
+
+exercises = sorted(wall["exercise_normalized"].unique())
+for ex in exercises:
+    ex_df = wall[wall.exercise_normalized == ex].sort_values("x_pos")
+    c = color_for(ex)
+
+    # All weekly dots (smaller, same color)
+    fig.add_trace(go.Scatter(
+        x=ex_df["x_pos"],
+        y=ex_df["weight_kg"],
+        mode="markers",
+        marker=dict(size=4, color=c, opacity=0.35),
+        name=ex,
+        legendgroup=ex,
+        showlegend=False,
+        hovertemplate=f"{ex}<br>Phase %{{customdata[0]}}, Week %{{customdata[1]}}<br>%{{y}} kg<extra></extra>",
+        customdata=ex_df[["phase_num", "week"]].values,
+    ))
+
+    # Week 1 line (bold, with markers)
+    w1 = ex_df[ex_df.week == 1].sort_values("phase_num")
+    fig.add_trace(go.Scatter(
+        x=w1["x_pos"],
+        y=w1["weight_kg"],
+        mode="lines+markers",
+        marker=dict(size=7, color=c),
+        line=dict(color=c, width=2),
+        name=ex,
+        legendgroup=ex,
+        showlegend=True,
+        hovertemplate=f"{ex}<br>Phase %{{customdata[0]}}, Week 1<br>%{{y}} kg<extra></extra>",
+        customdata=w1[["phase_num", "week"]].values,
+    ))
+
 fig.update_layout(
-    height=550,
-    legend=dict(orientation="h", yanchor="top", y=-0.2, xanchor="center", x=0.5),
-    hovermode="x unified",
+    **LAYOUT,
+    height=600,
+    xaxis=dict(tickvals=tick_vals, ticktext=tick_text, title="Phase", **GRID),
+    yaxis=dict(title="Weight (kg)", **GRID),
+    legend=dict(orientation="h", yanchor="top", y=-0.15, xanchor="center", x=0.5),
+    hovermode="closest",
 )
 fig.show()
 ```
 
 ## Weekly Weight Ramp Within Phases
 
-How weight increases week-to-week within each training block. Select compound
-exercises that appear across all or most phases.
+How weight increases week-to-week within each training block, for every exercise.
 
 ```{python}
-compounds = [
-    "Beinpresse",
-    "Kniebeuge Maschine",
-    "Bankdrücken",
-    "Schrägbankdrücken",
-    "Rudern",
-    "Latzug",
-    "Kreuzheben KH",
-]
-dc = dfw[dfw.exercise_normalized.isin(compounds)].copy()
+from plotly.subplots import make_subplots
 
-fig = px.line(
-    dc.sort_values(["phase_num", "week"]),
-    x="week",
-    y="weight_kg",
-    color="exercise_normalized",
-    facet_col="phase",
-    facet_col_wrap=4,
-    markers=True,
-    labels={
-        "weight_kg": "Weight (kg)",
-        "week": "Week",
-        "exercise_normalized": "Exercise",
-    },
-    category_orders={"phase": phase_labels},
+phases_in_order = dfw.drop_duplicates("phase_num").sort_values("phase_num")
+phase_nums = phases_in_order["phase_num"].tolist()
+phase_names = phases_in_order["phase"].tolist()
+n = len(phase_nums)
+ncols = 4
+nrows = -(-n // ncols)  # ceil division
+
+fig = make_subplots(
+    rows=nrows, cols=ncols,
+    subplot_titles=phase_names,
+    shared_yaxes=False,
+    horizontal_spacing=0.05,
+    vertical_spacing=0.08,
 )
-fig.update_layout(height=800, showlegend=True)
-fig.for_each_annotation(lambda a: a.update(text=a.text.split("=")[-1]))
+
+all_exercises = sorted(dfw["exercise_normalized"].unique())
+shown_in_legend = set()
+
+for idx, pnum in enumerate(phase_nums):
+    row = idx // ncols + 1
+    col = idx % ncols + 1
+    pdf = dfw[dfw.phase_num == pnum].sort_values("week")
+
+    for ex in all_exercises:
+        edf = pdf[pdf.exercise_normalized == ex]
+        if edf.empty:
+            continue
+        # Deduplicate if exercise appears in both plans (keep first)
+        edf = edf.drop_duplicates(subset=["week"], keep="first")
+        c = color_for(ex)
+        show_legend = ex not in shown_in_legend
+        if show_legend:
+            shown_in_legend.add(ex)
+
+        fig.add_trace(
+            go.Scatter(
+                x=edf["week"],
+                y=edf["weight_kg"],
+                mode="lines+markers",
+                marker=dict(size=4, color=c),
+                line=dict(color=c, width=1.5),
+                name=ex,
+                legendgroup=ex,
+                showlegend=show_legend,
+                hovertemplate=f"{ex}<br>Week %{{x}}<br>%{{y}} kg<extra></extra>",
+            ),
+            row=row, col=col,
+        )
+
+# Apply white bg and grid to ALL subplots
+fig.update_layout(
+    **LAYOUT,
+    height=250 * nrows,
+    legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5),
+)
+fig.update_xaxes(**GRID, title_text="", dtick=1)
+fig.update_yaxes(**GRID, title_text="")
 fig.show()
 ```
 
-## Rep Scheme Evolution
+## Strength Gains Heatmap
 
-Reps per set decreased over the program (12 → 10 → 8 → 6) while weights increased,
-following a classic periodization model.
+Percentage change in peak (last week) weight relative to the first phase each exercise
+appears in. Darker green = bigger gains since baseline.
 
 ```{python}
-reps_df = (
-    dfw[dfw.week == 1]
-    .drop_duplicates(subset=["phase_num", "exercise_normalized"])
-    .copy()
-)
-reps_df["reps"] = pd.to_numeric(reps_df["reps"], errors="coerce")
+# Use last week of each phase (peak weight) per exercise
+wmax = dfw.loc[dfw.groupby(["phase_num", "exercise_normalized"])["week"].idxmax()]
+wmax = wmax.drop_duplicates(subset=["phase_num", "exercise_normalized"], keep="first")
 
-avg_reps = (
-    reps_df.groupby(["phase_num", "phase"])["reps"]
-    .median()
-    .reset_index()
-    .sort_values("phase_num")
+heat = wmax.pivot_table(
+    index="exercise_normalized", columns="phase", values="weight_kg",
+    aggfunc="first",
 )
+heat = heat.reindex(columns=phase_labels)
 
-fig = go.Figure()
-fig.add_trace(
-    go.Bar(
-        x=avg_reps["phase"],
-        y=avg_reps["reps"],
-        marker_color="#3498db",
-        text=avg_reps["reps"].astype(int),
-        textposition="outside",
+# Percentage change from each exercise's first non-NaN value
+baseline = heat.apply(lambda row: row.dropna().iloc[0] if row.dropna().any() else np.nan, axis=1)
+pct = heat.div(baseline, axis=0).subtract(1).multiply(100)
+
+# Sort by total gain (biggest gainers on top)
+pct = pct.loc[pct.max(axis=1).sort_values(ascending=False).index]
+
+# Hover shows both % change and absolute kg
+hover_text = []
+for ex in pct.index:
+    row_hover = []
+    for phase in pct.columns:
+        p = pct.loc[ex, phase]
+        kg = heat.loc[ex, phase]
+        if pd.notna(p):
+            row_hover.append(f"{ex}<br>{phase}<br>{p:+.0f}% ({kg:.4g} kg)")
+        else:
+            row_hover.append("")
+    hover_text.append(row_hover)
+
+# Cell text: show "+X%" (skip baseline 0%)
+cell_text = pct.map(lambda v: f"+{v:.0f}%" if pd.notna(v) and v > 0 else ("0%" if pd.notna(v) else ""))
+
+fig = go.Figure(
+    go.Heatmap(
+        z=pct.values,
+        x=pct.columns.tolist(),
+        y=pct.index.tolist(),
+        colorscale=[[0, "#f7f7f7"], [0.5, "#a1d99b"], [1, "#006d2c"]],
+        colorbar=dict(title="%", ticksuffix="%"),
+        hoverongaps=False,
+        hovertext=hover_text,
+        hovertemplate="%{hovertext}<extra></extra>",
+        text=cell_text.values,
+        texttemplate="%{text}",
+        textfont=dict(size=10),
     )
 )
 fig.update_layout(
-    yaxis_title="Reps per Set (median)",
-    xaxis_title="Phase",
-    height=400,
-    yaxis=dict(range=[0, 14]),
+    **LAYOUT,
+    height=max(400, len(pct) * 35 + 100),
+    xaxis=dict(title="Phase", side="bottom"),
+    yaxis=dict(title="", autorange="reversed"),
+    margin=dict(l=180),
 )
-fig.show()
-```
-
-## Volume Comparison: Plan A vs Plan B
-
-Starting from Phase 4, training splits into Plan A (typically squat/bench/pull
-compounds) and Plan B (press/incline/row compounds). Comparison uses total Week 1
-load (weight × reps × sets where available).
-
-```{python}
-ab = dfw[(dfw.plan.isin(["A", "B"])) & (dfw.week == 1)].copy()
-ab["reps_n"] = pd.to_numeric(ab["reps"], errors="coerce")
-ab["sets_n"] = pd.to_numeric(ab["sets"], errors="coerce").fillna(3)
-ab["volume"] = ab["weight_kg"] * ab["reps_n"] * ab["sets_n"]
-
-vol = (
-    ab.groupby(["phase_num", "phase", "plan"])["volume"]
-    .sum()
-    .reset_index()
-    .sort_values("phase_num")
-)
-
-fig = px.bar(
-    vol,
-    x="phase",
-    y="volume",
-    color="plan",
-    barmode="group",
-    labels={"volume": "Total Volume (kg × reps × sets)", "phase": "Phase"},
-    category_orders={"phase": phase_labels, "plan": ["A", "B"]},
-    color_discrete_map={"A": "#2ecc71", "B": "#e74c3c"},
-)
-fig.update_layout(height=450)
 fig.show()
 ```
 
@@ -204,3 +291,9 @@ for _, grp in df.groupby("phase_num"):
 summary = pd.DataFrame(summary_rows)
 show(summary, paging=False, searching=False)
 ```
+
+---
+
+::: {.text-center .text-muted style="font-size: 0.85em; padding: 1em 0;"}
+Built with [Claude Code](https://anthropic.skilljar.com/claude-code-in-action) | [Source on GitHub](https://github.com/valentinklotzbuecher/statera_vk)
+:::

@@ -297,7 +297,7 @@ def parse_file(filepath):
 
 
 def main():
-    files = sorted(glob.glob("*.xls"))
+    files = sorted(glob.glob("data/*.xls"))
     print(f"Found {len(files)} Excel files")
 
     all_rows = []

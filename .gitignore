@@ -1,0 +1,12 @@
+# Data files (keep locally, don't track in git)
+data/*.xls
+data/*.csv
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Quarto
+.quarto/
+*_files/
